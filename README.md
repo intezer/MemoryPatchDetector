@@ -14,3 +14,6 @@ Detects code differentials between executables in disk and the corresponding pro
     
 ## Notes
     The script needs Administrator/SYSTEM privileges in order to analyze all the processes in memory
+
+## About us
+    http://www.theresponder.co
