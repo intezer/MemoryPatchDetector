@@ -188,7 +188,7 @@ def print_process_patches(process_patches):
 def get_process_patches(process_id=None):
     processes_patches = []
     if not process_id:
-        process_ids = [pid for pid in psutil.get_pid_list() if pid != 0]
+        process_ids = [pid for pid in psutil.pids() if pid != 0]
     else:
         process_ids = [process_id]
 
