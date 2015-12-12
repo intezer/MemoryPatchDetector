@@ -13,6 +13,7 @@ from capstone import *
 NTDLL = ctypes.windll.ntdll
 KERNEL32 = ctypes.windll.kernel32
 PSAPI = ctypes.windll.psapi
+IMAGE_SCN_MEM_EXECUTE = 0x20000000
 
 # Change address size by system architecture
 if winappdbg.System.bits == 64:
@@ -21,15 +22,15 @@ else:
     PTR = ctypes.c_void_p
 
 def list_reloc(relocations, size, virtualAddress):
-    listReloc = [False] * size
+    list_relocs = [False] * size
     for reloc in relocations:
         for relocEntry in reloc.entries:
             addr2 = relocEntry.rva - virtualAddress
             if addr2 >= 0:
                 for i in range(addr2, addr2 + sizeof(PTR) + 1):
                     if (i + 1) < size:
-                        listReloc[i + 1] = True
-    return listReloc
+                        list_relocs[i + 1] = True
+    return list_relocs
 
 def parse_relocations(proc, moduleBaseAddress, pe, data_rva, rva, size):
         data = proc.read(moduleBaseAddress + data_rva, size)
@@ -113,62 +114,65 @@ def analyze_process(pid):
 
     for module_base_addr in proc.get_module_bases():
         module = proc.get_module_at_address(module_base_addr)
-        moduleObj = {'file': module.get_filename(), 'base_address': module_base_addr, 'patches' : []}
+        module_obj = {'file': module.get_filename(), 'base_address': module_base_addr, 'patches' : []}
 
         try:
-            # Get memory text section
-            moduleData = proc.read(module_base_addr, module.get_size())
-            pe_mem = pefile.PE(data = moduleData, fast_load = True)
-
-            textSectionInfo_mem = [s for s in pe_mem.sections if s.Name.replace('\x00', '') == '.text']
-            if len(textSectionInfo_mem) == 0:
-                # Module has no .text section
-                continue;
-            else:
-                textSectionInfo_mem = textSectionInfo_mem[0]
-            textSectionData_mem = proc.read(module_base_addr + textSectionInfo_mem.VirtualAddress, textSectionInfo_mem.Misc_VirtualSize)
-
-            # Get disk text section
+            module_data = proc.read(module_base_addr, module.get_size())
+            pe_mem = pefile.PE(data = module_data, fast_load = True)
             pe_disk = pefile.PE(name = module.get_filename(), fast_load = True)
-            textSectionInfo_disk = [s for s in pe_disk.sections if s.Name.replace('\x00', '') == '.text']
-            if len(textSectionInfo_disk) == 0:
-                # Module has no .text section
-                continue;
-            else:
-                textSectionInfo_disk = textSectionInfo_disk[0]
-            textSectionData_disk = textSectionInfo_disk.get_data()[:textSectionInfo_mem.Misc_VirtualSize]
+            mem_exec_sections = [section for section in pe_mem.sections if section.Characteristics & IMAGE_SCN_MEM_EXECUTE]
+            disk_exec_sections = [section for section in pe_disk.sections if section.Characteristics & IMAGE_SCN_MEM_EXECUTE]
+            
+            # Sort the section lists by name for sanity checking and easier looping later on
+            mem_exec_sections.sort(key = lambda section: section.Name)
+            disk_exec_sections.sort(key = lambda section: section.Name)
 
-            # Compare text sections between disk and memory
-            if (textSectionData_disk != textSectionData_mem):
+            if not len(mem_exec_sections):
+                # Module has no executable sections
+                continue;
+            elif len(mem_exec_sections) != len(disk_exec_sections):
+                # Incompatible number of executable sections..?
+                continue
+            elif any(mem_exec_sections[idx].Name != disk_exec_sections[idx].Name for idx in range(len(mem_exec_sections))):
+                # Incompatible section names, but same number of sections
+                continue
+
+            for idx in range(0, len(mem_exec_sections)):
+                mem_section_data = proc.read(module_base_addr + mem_exec_sections[idx].VirtualAddress, mem_exec_sections[idx].Misc_VirtualSize)
+                disk_section_data = disk_exec_sections[idx].get_data()[:mem_exec_sections[idx].Misc_VirtualSize]
+
+                # Compare text sections between disk and memory
+                if mem_section_data == disk_section_data:
+                    continue
+
                 relocations = get_relocations(pe_mem, proc, module_base_addr)
-                listReloc = list_reloc(relocations, textSectionInfo_mem.Misc_VirtualSize, textSectionInfo_mem.VirtualAddress)
-                lastPatchPosition = -1
+                list_relocs = list_reloc(relocations, mem_exec_sections[idx].Misc_VirtualSize, mem_exec_sections[idx].VirtualAddress)
+                last_patch_position = -1
                 current_patch = None
 
-                for i in range(textSectionInfo_mem.Misc_VirtualSize):
+                for i in range(mem_exec_sections[idx].Misc_VirtualSize):
                     # Check if there's a differential between memory and disk, taking to account base relocations
-                    if textSectionData_disk[i] != textSectionData_mem[i] and not listReloc[i]:
-                        if i == lastPatchPosition + 1:
-                            current_patch['mem_bytes'] += textSectionData_mem[i]
-                            current_patch['disk_bytes'] += textSectionData_mem[i]
+                    if disk_section_data[i] != mem_section_data[i] and not list_relocs[i]:
+                        if i == last_patch_position + 1:
+                            current_patch['mem_bytes'] += mem_section_data[i]
+                            current_patch['disk_bytes'] += disk_section_data[i]
                         else:
-                            current_patch = {'offset': textSectionInfo_mem.VirtualAddress + i , 
-                                             'mem_bytes': textSectionData_mem[i], 
-                                             'disk_bytes': textSectionData_disk[i] }
-                            moduleObj['patches'].append(current_patch)
-                        lastPatchPosition = i
+                            current_patch = {'offset': mem_exec_sections[idx].VirtualAddress + i , 
+                                             'mem_bytes': mem_section_data[i], 
+                                             'disk_bytes': disk_section_data[i] }
+                            module_obj['patches'].append(current_patch)
+                        last_patch_position = i
             
             # If there are patches, convert bytes to REIL
-            if len(moduleObj['patches']) > 0:
-                for patch in moduleObj['patches']:
+            if len(module_obj['patches']) > 0:
+                for patch in module_obj['patches']:
                     patch['mem_code'] = ""
                     patch['disk_code'] = ""
                     for (address, size, mnemonic, op_str) in md.disasm_lite(patch['mem_bytes'], patch['offset']):
                         patch['mem_code'] += "0x%x:\t%s\t%s" % (address, mnemonic, op_str) + "\n"
                     for (address, size, mnemonic, op_str) in md.disasm_lite(patch['disk_bytes'], patch['offset']):
                         patch['disk_code'] += "0x%x:\t%s\t%s" % (address, mnemonic, op_str) + "\n"
-                process_patches['modules'].append(moduleObj)
-
+                process_patches['modules'].append(module_obj)
         except OSError as ex:
             if ex.winerror != 299:
                 print str(ex)
