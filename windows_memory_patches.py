@@ -7,7 +7,6 @@ from itertools import groupby
 from ctypes import *
 from ctypes.wintypes import DWORD, HMODULE, MAX_PATH, BYTE, ULONG, HANDLE, USHORT
 import ctypes, psutil, threading
-import win32con
 from capstone import *
 
 NTDLL = ctypes.windll.ntdll
@@ -100,7 +99,7 @@ def get_relocations(pe, proc, moduleBaseAddress):
 
         return relocations
     except Exception as ex:
-        print str(ex)
+        print(str(ex))
 
 def analyze_process(pid):
     proc = winappdbg.Process(pid)
@@ -175,18 +174,18 @@ def analyze_process(pid):
                 process_patches['modules'].append(module_obj)
         except OSError as ex:
             if ex.winerror != 299:
-                print str(ex)
+                print(str(ex))
     return process_patches
 
 def print_process_patches(process_patches):
-    print "Patches in PID %s, File %s" % (process_patches['pid'], process_patches['file'])
+    print("Patches in PID {0}, File {1}".format(process_patches['pid'], process_patches['file']))
     for module in process_patches['modules']:
-        print "Module %s" % module['file']
+        print("Module {}".format(module['file']))
         for patch in module['patches']:
-            print "Disk Code: "
-            print patch['disk_code']
-            print "Memory Code: "
-            print patch['mem_code']
+            print("Disk Code: ")
+            print("{}".format(patch['disk_code']))
+            print("Memory Code: ")
+            print("{}".format(patch['mem_code'])
     
 
 def get_process_patches(process_id=None):
@@ -203,11 +202,11 @@ def get_process_patches(process_id=None):
                 print_process_patches(process_patches)
                 processes_patches.append(process_patches)
             else:
-                print "No patches in process ID: %s" % pid
+                print("No patches in process ID: {}".format(pid)
         except Exception as ex:
-            print "Error analyzing process ID: %s" % pid
+            print("Error analyzing process ID: {}".format(pid)
     return processes_patches
 
 if __name__ == "__main__":
     patches = get_process_patches()
-    print patches
+    print({}.format(patches))
