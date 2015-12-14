@@ -113,27 +113,33 @@ def analyze_process(pid):
 
     for module_base_addr in proc.get_module_bases():
         module = proc.get_module_at_address(module_base_addr)
-        module_obj = {'file': module.get_filename(), 'base_address': module_base_addr, 'patches' : []}
+        module_obj = {'file': module.get_filename(), 'base_address': module_base_addr, 'patches': [], 'additional_sections': []}
 
         try:
             module_data = proc.read(module_base_addr, module.get_size())
             pe_mem = pefile.PE(data = module_data, fast_load = True)
             pe_disk = pefile.PE(name = module.get_filename(), fast_load = True)
-            mem_exec_sections = [section for section in pe_mem.sections if section.Characteristics & IMAGE_SCN_MEM_EXECUTE]
+
+            # We assume that the section Characteristics field could have been modified at runtime, 
+            # so we trust each section's Characteristics from disk, even if it's not marked as executable in memory -
+            # this is since a section can be marked not executable but the pages in it marked as executable.
             disk_exec_sections = [section for section in pe_disk.sections if section.Characteristics & IMAGE_SCN_MEM_EXECUTE]
+            disk_section_names = [section.Name for section in disk_exec_sections]
+            mem_exec_sections = [section for section in pe_mem.sections if section.Characteristics & IMAGE_SCN_MEM_EXECUTE \
+                                    or section.Name in disk_section_names]
             
             # Sort the section lists by name for sanity checking and easier looping later on
             mem_exec_sections.sort(key = lambda section: section.Name)
             disk_exec_sections.sort(key = lambda section: section.Name)
 
-            if not len(mem_exec_sections):
-                # Module has no executable sections
+            if not len(disk_exec_sections):
+                # Module has no executable sections on disk
                 continue;
-            elif len(mem_exec_sections) != len(disk_exec_sections):
-                # Incompatible number of executable sections..?
-                continue
-            elif any(mem_exec_sections[idx].Name != disk_exec_sections[idx].Name for idx in range(len(mem_exec_sections))):
-                # Incompatible section names, but same number of sections
+            elif len(mem_exec_sections) != len(disk_exec_sections) or \
+                any(mem_exec_sections[idx].Name != disk_exec_sections[idx].Name for idx in range(len(mem_exec_sections))):
+                # Incompatible number of executable sections, or mismatching section names.
+                additional_sections = [section.Name for section in mem_exec_sections if section.Name not in disk_section_names]
+                module_obj['additional_sections'].append(additional_sections)
                 continue
 
             for idx in range(0, len(mem_exec_sections)):
@@ -168,9 +174,11 @@ def analyze_process(pid):
                     patch['mem_code'] = ""
                     patch['disk_code'] = ""
                     for (address, size, mnemonic, op_str) in md.disasm_lite(patch['mem_bytes'], patch['offset']):
-                        patch['mem_code'] += "0x%x:\t%s\t%s" % (address, mnemonic, op_str) + "\n"
+                        patch['mem_code'] += "{0:#x}:\t{1}\t{2}\n".format(address, mnemonic, op_str)
                     for (address, size, mnemonic, op_str) in md.disasm_lite(patch['disk_bytes'], patch['offset']):
-                        patch['disk_code'] += "0x%x:\t%s\t%s" % (address, mnemonic, op_str) + "\n"
+                        patch['disk_code'] += "{0:#x}:\t{1}\t{2}\n".format(address, mnemonic, op_str))
+                process_patches['modules'].append(module_obj)
+            elif len(module_obj['additional_sections']) > 0:
                 process_patches['modules'].append(module_obj)
         except OSError as ex:
             if ex.winerror != 299:
@@ -186,6 +194,9 @@ def print_process_patches(process_patches):
             print("{}".format(patch['disk_code']))
             print("Memory Code: ")
             print("{}".format(patch['mem_code'])
+        for section in module['additional_sections']:
+            print("Additional executable section: ")
+            print("{}".format(section.Name))
     
 
 def get_process_patches(process_id=None):
@@ -198,7 +209,8 @@ def get_process_patches(process_id=None):
     for pid in process_ids:
         try:
             process_patches = analyze_process(pid)
-            if process_patches != None and len(process_patches['modules']) > 0:
+            if process_patches is not None and (len(process_patches['modules']) > 0 or \
+                len(process_patches['additional_sections']) > 0):
                 print_process_patches(process_patches)
                 processes_patches.append(process_patches)
             else:
