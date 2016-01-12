@@ -2,12 +2,7 @@
 Detects code differentials between executables in disk and the corresponding processes/modules in memory
 
 ## Requirements
-    pip install ctypes
-    pip install winappdbg
-    pip install pywin32
-    pip install pypiwin32
-    pip install pefile
-    pip install capstone
+    pip install -r requirements.txt
 
 ## Usage
     python windows_memory_patches.py
