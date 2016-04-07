@@ -150,23 +150,32 @@ def analyze_process(pid):
                 if mem_section_data == disk_section_data:
                     continue
 
-                relocations = get_relocations(pe_mem, proc, module_base_addr)
-                list_relocs = list_reloc(relocations, mem_exec_sections[idx].Misc_VirtualSize, mem_exec_sections[idx].VirtualAddress)
-                last_patch_position = -1
-                current_patch = None
+                # Handle a case where there is no data in disk section
+                if disk_section_data == '':
+                    module_obj['patches'].append({'offset': mem_exec_sections[idx].VirtualAddress,
+                                                  'mem_bytes': mem_section_data,
+                                                  'disk_bytes': disk_section_data })
+                else:
+                    relocations = get_relocations(pe_mem, proc, module_base_addr)
+                    list_relocs = list_reloc(relocations, mem_exec_sections[idx].Misc_VirtualSize, mem_exec_sections[idx].VirtualAddress)
+                    last_patch_position = None
+                    current_patch = None
 
-                for i in range(mem_exec_sections[idx].Misc_VirtualSize):
-                    # Check if there's a differential between memory and disk, taking to account base relocations
-                    if disk_section_data[i] != mem_section_data[i] and not list_relocs[i]:
-                        if i == last_patch_position + 1:
-                            current_patch['mem_bytes'] += mem_section_data[i]
-                            current_patch['disk_bytes'] += disk_section_data[i]
-                        else:
-                            current_patch = {'offset': mem_exec_sections[idx].VirtualAddress + i , 
-                                             'mem_bytes': mem_section_data[i], 
-                                             'disk_bytes': disk_section_data[i] }
-                            module_obj['patches'].append(current_patch)
-                        last_patch_position = i
+                    for i in range(mem_exec_sections[idx].Misc_VirtualSize):
+                        # Check if there's a differential between memory and disk, taking to account base relocations
+                        if not list_relocs[i] and (i > len(disk_section_data) - 1 or disk_section_data[i] != mem_section_data[i]):
+                            curr_disk_section_byte = ''
+                            if i < len(disk_section_data):
+                                curr_disk_section_byte = disk_section_data[i]
+                            if last_patch_position is not None and i == last_patch_position + 1:
+                                current_patch['mem_bytes'] += mem_section_data[i]
+                                current_patch['disk_bytes'] += curr_disk_section_byte
+                            else:
+                                current_patch = {'offset': mem_exec_sections[idx].VirtualAddress + i ,
+                                                 'mem_bytes': mem_section_data[i],
+                                                 'disk_bytes': curr_disk_section_byte }
+                                module_obj['patches'].append(current_patch)
+                            last_patch_position = i
             
             # If there are patches, convert bytes to REIL
             if len(module_obj['patches']) > 0:
@@ -190,35 +199,38 @@ def print_process_patches(process_patches):
     for module in process_patches['modules']:
         print("Module {}".format(module['file']))
         for patch in module['patches']:
-            print("Disk Code: ")
-            print("{}".format(patch['disk_code']))
-            print("Memory Code: ")
-            print("{}".format(patch['mem_code']))
+            if patch['disk_code'] != '' and patch['mem_code'] != '':
+                print("Disk Code: ")
+                print("{}".format(patch['disk_code']))
+                print("Memory Code: ")
+                print("{}".format(patch['mem_code']))
         for section in module['additional_sections']:
             print("Additional executable section: ")
             print("{}".format(section.Name))
     
 
-def get_process_patches(process_id=None):
+def get_process_patches(process_ids):
     processes_patches = []
-    if not process_id:
+    if not process_ids:
         process_ids = [pid for pid in psutil.pids() if pid != 0]
-    else:
-        process_ids = [process_id]
 
     for pid in process_ids:
         try:
             process_patches = analyze_process(pid)
-            if process_patches is not None and (len(process_patches['modules']) > 0 or \
-                len(process_patches['additional_sections']) > 0):
+            if process_patches is not None and len(process_patches['modules']) > 0:
                 print_process_patches(process_patches)
                 processes_patches.append(process_patches)
             else:
-                print("No patches in process ID: {}".format(pid)
+                print("No patches in process ID: {}".format(pid))
         except Exception as ex:
-            print("Error analyzing process ID: {}".format(pid)
+            import traceback
+            print(traceback.print_exc(ex))
+            print("Error analyzing process ID: {}".format(pid))
     return processes_patches
 
 if __name__ == "__main__":
+    system = winappdbg.System()
+    system.request_debug_privileges()
+    system.scan_processes()
+
     patches = get_process_patches()
-    print({}.format(patches))
