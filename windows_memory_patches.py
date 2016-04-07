@@ -223,8 +223,6 @@ def get_process_patches(process_ids = None):
             else:
                 print("No patches in process ID: {}".format(pid))
         except Exception as ex:
-            import traceback
-            print(traceback.print_exc(ex))
             print("Error analyzing process ID: {}".format(pid))
     return processes_patches
 
