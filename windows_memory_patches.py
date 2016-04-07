@@ -209,7 +209,7 @@ def print_process_patches(process_patches):
             print("{}".format(section.Name))
     
 
-def get_process_patches(process_ids):
+def get_process_patches(process_ids = None):
     processes_patches = []
     if not process_ids:
         process_ids = [pid for pid in psutil.pids() if pid != 0]
