@@ -81,7 +81,7 @@ def get_relocations(pe, proc, moduleBaseAddress):
                     pe.__IMAGE_BASE_RELOCATION_format__,
                     proc.read(moduleBaseAddress + rva, rlc_size),
                     file_offset = pe.get_offset_from_rva(rva) )
-            except PEFormatError:
+            except pefile.PEFormatError:
                 rlc = None
             
             if not rlc:
@@ -134,7 +134,7 @@ def analyze_process(pid):
 
             if not len(disk_exec_sections):
                 # Module has no executable sections on disk
-                continue;
+                continue
             elif len(mem_exec_sections) != len(disk_exec_sections) or \
                 any(mem_exec_sections[idx].Name != disk_exec_sections[idx].Name for idx in range(len(mem_exec_sections))):
                 # Incompatible number of executable sections, or mismatching section names.
@@ -176,7 +176,7 @@ def analyze_process(pid):
                     for (address, size, mnemonic, op_str) in md.disasm_lite(patch['mem_bytes'], patch['offset']):
                         patch['mem_code'] += "{0:#x}:\t{1}\t{2}\n".format(address, mnemonic, op_str)
                     for (address, size, mnemonic, op_str) in md.disasm_lite(patch['disk_bytes'], patch['offset']):
-                        patch['disk_code'] += "{0:#x}:\t{1}\t{2}\n".format(address, mnemonic, op_str))
+                        patch['disk_code'] += "{0:#x}:\t{1}\t{2}\n".format(address, mnemonic, op_str)
                 process_patches['modules'].append(module_obj)
             elif len(module_obj['additional_sections']) > 0:
                 process_patches['modules'].append(module_obj)
@@ -193,7 +193,7 @@ def print_process_patches(process_patches):
             print("Disk Code: ")
             print("{}".format(patch['disk_code']))
             print("Memory Code: ")
-            print("{}".format(patch['mem_code'])
+            print("{}".format(patch['mem_code']))
         for section in module['additional_sections']:
             print("Additional executable section: ")
             print("{}".format(section.Name))
