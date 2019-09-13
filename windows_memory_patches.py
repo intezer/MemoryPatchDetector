@@ -4,6 +4,7 @@ import capstone
 import pefile
 import psutil
 import winappdbg
+from builtins import range
 
 NTDLL = ctypes.windll.ntdll
 KERNEL32 = ctypes.windll.kernel32
@@ -34,7 +35,7 @@ def parse_relocations(proc, module_base_address, pe, data_rva, rva, size):
     file_offset = pe.get_offset_from_rva(data_rva)
 
     entries = []
-    for idx in xrange(len(data) / 2):
+    for idx in range(len(data) / 2):
 
         entry = pe.__unpack_data__(
             pe.__IMAGE_BASE_RELOCATION_ENTRY_format__,
