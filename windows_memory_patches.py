@@ -1,13 +1,9 @@
-import win32api
-import winappdbg
+import ctypes
+
+import capstone
 import pefile
-from pefile import Structure
-from difflib import Differ
-from itertools import groupby
-from ctypes import *
-from ctypes.wintypes import DWORD, HMODULE, MAX_PATH, BYTE, ULONG, HANDLE, USHORT
-import ctypes, psutil, threading
-from capstone import *
+import psutil
+import winappdbg
 
 NTDLL = ctypes.windll.ntdll
 KERNEL32 = ctypes.windll.kernel32
@@ -20,78 +16,83 @@ if winappdbg.System.bits == 64:
 else:
     PTR = ctypes.c_void_p
 
-def list_reloc(relocations, size, virtualAddress):
-    list_relocs = [False] * size
-    for reloc in relocations:
-        for relocEntry in reloc.entries:
-            addr2 = relocEntry.rva - virtualAddress
+
+def list_relocations(relocations, size, virtual_address):
+    relocations_list = [False] * size
+    for relocation in relocations:
+        for relocation_entry in relocation.entries:
+            addr2 = relocation_entry.rva - virtual_address
             if addr2 >= 0:
-                for i in range(addr2, addr2 + sizeof(PTR) + 1):
+                for i in range(addr2, addr2 + ctypes.sizeof(PTR) + 1):
                     if (i + 1) < size:
-                        list_relocs[i + 1] = True
-    return list_relocs
-
-def parse_relocations(proc, moduleBaseAddress, pe, data_rva, rva, size):
-        data = proc.read(moduleBaseAddress + data_rva, size)
-        file_offset = pe.get_offset_from_rva(data_rva)
-
-        entries = []
-        for idx in xrange( len(data) / 2 ):
-
-            entry = pe.__unpack_data__(
-                pe.__IMAGE_BASE_RELOCATION_ENTRY_format__,
-                data[idx*2:(idx+1)*2],
-                file_offset = file_offset )
-
-            if not entry:
-                break
-            word = entry.Data
-
-            reloc_type = (word>>12)
-            reloc_offset = (word & 0x0fff)
-            relocationData = pefile.RelocationData(
-                    struct = entry,
-                    type = reloc_type,
-                    base_rva = rva,
-                    rva = reloc_offset+rva)
-
-            if relocationData.struct.Data > 0 and \
-               (relocationData.type == pefile.RELOCATION_TYPE['IMAGE_REL_BASED_HIGHLOW'] or \
-                relocationData.type == pefile.RELOCATION_TYPE['IMAGE_REL_BASED_DIR64']):
-                entries.append(relocationData)
-            file_offset += entry.sizeof()
-
-        return entries
+                        relocations_list[i + 1] = True
+    return relocations_list
 
 
-def get_relocations(pe, proc, moduleBaseAddress):
+def parse_relocations(proc, module_base_address, pe, data_rva, rva, size):
+    data = proc.read(module_base_address + data_rva, size)
+    file_offset = pe.get_offset_from_rva(data_rva)
+
+    entries = []
+    for idx in range(len(data) / 2):
+
+        entry = pe.__unpack_data__(
+            pe.__IMAGE_BASE_RELOCATION_ENTRY_format__,
+            data[idx * 2:(idx + 1) * 2],
+            file_offset=file_offset)
+
+        if not entry:
+            break
+        word = entry.Data
+
+        relocation_type = (word >> 12)
+        relocation_offset = (word & 0x0fff)
+        relocation_data = pefile.RelocationData(
+            struct=entry,
+            type=relocation_type,
+            base_rva=rva,
+            rva=relocation_offset + rva)
+
+        if relocation_data.struct.Data > 0 and \
+                (relocation_data.type == pefile.RELOCATION_TYPE['IMAGE_REL_BASED_HIGHLOW'] or
+                 relocation_data.type == pefile.RELOCATION_TYPE['IMAGE_REL_BASED_DIR64']):
+            entries.append(relocation_data)
+        file_offset += entry.sizeof()
+
+    return entries
+
+
+def get_relocations(pe, proc, module_base_address):
     try:
         relocations = []
-        relocTable = pe.NT_HEADERS.OPTIONAL_HEADER.DATA_DIRECTORY[pefile.DIRECTORY_ENTRY['IMAGE_DIRECTORY_ENTRY_BASERELOC']]
-        rva = relocTable.VirtualAddress
-        size = relocTable.Size
+        relocation_table = pe.NT_HEADERS.OPTIONAL_HEADER.DATA_DIRECTORY[
+            pefile.DIRECTORY_ENTRY['IMAGE_DIRECTORY_ENTRY_BASERELOC']]
+        rva = relocation_table.VirtualAddress
+        size = relocation_table.Size
 
-        if (size == 0):
+        if size == 0:
             return []
+
         rlc_size = pefile.Structure(pe.__IMAGE_BASE_RELOCATION_format__).sizeof()
         end = rva + size
-        while rva<end:
+        while rva < end:
             try:
                 rlc = pe.__unpack_data__(
                     pe.__IMAGE_BASE_RELOCATION_format__,
-                    proc.read(moduleBaseAddress + rva, rlc_size),
-                    file_offset = pe.get_offset_from_rva(rva) )
+                    proc.read(module_base_address + rva, rlc_size),
+                    file_offset=pe.get_offset_from_rva(rva))
             except pefile.PEFormatError:
                 rlc = None
-            
+
             if not rlc:
                 break
-            reloc_entries = parse_relocations(proc, moduleBaseAddress, pe, rva+rlc_size, rlc.VirtualAddress, rlc.SizeOfBlock-rlc_size )
+            relocation_entries = parse_relocations(proc, module_base_address, pe, rva + rlc_size, rlc.VirtualAddress,
+                                                   rlc.SizeOfBlock - rlc_size)
 
             relocations.append(
                 pefile.BaseRelocationData(
-                    struct = rlc,
-                    entries = reloc_entries))
+                    struct=rlc,
+                    entries=relocation_entries))
 
             if not rlc.SizeOfBlock:
                 break
@@ -101,49 +102,58 @@ def get_relocations(pe, proc, moduleBaseAddress):
     except Exception as ex:
         print(str(ex))
 
+
 def analyze_process(pid):
     proc = winappdbg.Process(pid)
-    process_patches = {'pid' : pid, 'file': proc.get_filename(), 'modules': [] }
+    process_patches = {'pid': pid, 'file': proc.get_filename(), 'modules': []}
 
     if proc.get_bits() != winappdbg.System.bits:
         return
 
     # Initialize disassembler
-    md = Cs(CS_ARCH_X86, CS_MODE_32)
+    md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32)
 
     for module_base_addr in proc.get_module_bases():
         module = proc.get_module_at_address(module_base_addr)
-        module_obj = {'file': module.get_filename(), 'base_address': module_base_addr, 'patches': [], 'additional_sections': []}
+        module_obj = {'file': module.get_filename(),
+                      'base_address': module_base_addr,
+                      'patches': [],
+                      'additional_sections': []}
 
         try:
             module_data = proc.read(module_base_addr, module.get_size())
-            pe_mem = pefile.PE(data = module_data, fast_load = True)
-            pe_disk = pefile.PE(name = module.get_filename(), fast_load = True)
+            pe_mem = pefile.PE(data=module_data, fast_load=True)
+            pe_disk = pefile.PE(name=module.get_filename(), fast_load=True)
 
             # We assume that the section Characteristics field could have been modified at runtime, 
             # so we trust each section's Characteristics from disk, even if it's not marked as executable in memory -
             # this is since a section can be marked not executable but the pages in it marked as executable.
-            disk_exec_sections = [section for section in pe_disk.sections if section.Characteristics & IMAGE_SCN_MEM_EXECUTE]
+            disk_exec_sections = [section for section in pe_disk.sections if
+                                  section.Characteristics & IMAGE_SCN_MEM_EXECUTE]
             disk_section_names = [section.Name for section in disk_exec_sections]
-            mem_exec_sections = [section for section in pe_mem.sections if section.Characteristics & IMAGE_SCN_MEM_EXECUTE \
-                                    or section.Name in disk_section_names]
-            
+            mem_exec_sections = [section for section in pe_mem.sections if
+                                 section.Characteristics & IMAGE_SCN_MEM_EXECUTE
+                                 or section.Name in disk_section_names]
+
             # Sort the section lists by name for sanity checking and easier looping later on
-            mem_exec_sections.sort(key = lambda section: section.Name)
-            disk_exec_sections.sort(key = lambda section: section.Name)
+            mem_exec_sections.sort(key=lambda s: s.Name)
+            disk_exec_sections.sort(key=lambda s: s.Name)
 
             if not len(disk_exec_sections):
                 # Module has no executable sections on disk
                 continue
             elif len(mem_exec_sections) != len(disk_exec_sections) or \
-                any(mem_exec_sections[idx].Name != disk_exec_sections[idx].Name for idx in range(len(mem_exec_sections))):
+                    any(mem_exec_sections[idx].Name != disk_exec_sections[idx].Name for idx in
+                        range(len(mem_exec_sections))):
                 # Incompatible number of executable sections, or mismatching section names.
-                additional_sections = [section.Name for section in mem_exec_sections if section.Name not in disk_section_names]
+                additional_sections = [section.Name for section in mem_exec_sections if
+                                       section.Name not in disk_section_names]
                 module_obj['additional_sections'].append(additional_sections)
                 continue
 
             for idx in range(0, len(mem_exec_sections)):
-                mem_section_data = proc.read(module_base_addr + mem_exec_sections[idx].VirtualAddress, mem_exec_sections[idx].Misc_VirtualSize)
+                mem_section_data = proc.read(module_base_addr + mem_exec_sections[idx].VirtualAddress,
+                                             mem_exec_sections[idx].Misc_VirtualSize)
                 disk_section_data = disk_exec_sections[idx].get_data()[:mem_exec_sections[idx].Misc_VirtualSize]
 
                 # Compare text sections between disk and memory
@@ -154,31 +164,35 @@ def analyze_process(pid):
                 if disk_section_data == '':
                     module_obj['patches'].append({'offset': mem_exec_sections[idx].VirtualAddress,
                                                   'mem_bytes': mem_section_data,
-                                                  'disk_bytes': disk_section_data })
+                                                  'disk_bytes': disk_section_data})
                 else:
                     relocations = get_relocations(pe_mem, proc, module_base_addr)
-                    list_relocs = list_reloc(relocations, mem_exec_sections[idx].Misc_VirtualSize, mem_exec_sections[idx].VirtualAddress)
+                    relocations_list = list_relocations(relocations, mem_exec_sections[idx].Misc_VirtualSize,
+                                                        mem_exec_sections[idx].VirtualAddress)
                     last_patch_position = None
                     current_patch = None
 
                     for i in range(mem_exec_sections[idx].Misc_VirtualSize):
                         # Check if there's a differential between memory and disk, taking to account base relocations
-                        if not list_relocs[i] and (i > len(disk_section_data) - 1 or disk_section_data[i] != mem_section_data[i]):
+                        if not relocations_list[i] and (
+                                i > len(disk_section_data) - 1 or disk_section_data[i] != mem_section_data[i]):
                             curr_disk_section_byte = ''
+
                             if i < len(disk_section_data):
                                 curr_disk_section_byte = disk_section_data[i]
+
                             if last_patch_position is not None and i == last_patch_position + 1:
                                 current_patch['mem_bytes'] += mem_section_data[i]
                                 current_patch['disk_bytes'] += curr_disk_section_byte
                             else:
-                                current_patch = {'offset': mem_exec_sections[idx].VirtualAddress + i ,
+                                current_patch = {'offset': mem_exec_sections[idx].VirtualAddress + i,
                                                  'mem_bytes': mem_section_data[i],
-                                                 'disk_bytes': curr_disk_section_byte }
+                                                 'disk_bytes': curr_disk_section_byte}
                                 module_obj['patches'].append(current_patch)
                             last_patch_position = i
-            
+
             # If there are patches, convert bytes to REIL
-            if len(module_obj['patches']) > 0:
+            if module_obj['patches']:
                 for patch in module_obj['patches']:
                     patch['mem_code'] = ""
                     patch['disk_code'] = ""
@@ -187,12 +201,13 @@ def analyze_process(pid):
                     for (address, size, mnemonic, op_str) in md.disasm_lite(patch['disk_bytes'], patch['offset']):
                         patch['disk_code'] += "{0:#x}:\t{1}\t{2}\n".format(address, mnemonic, op_str)
                 process_patches['modules'].append(module_obj)
-            elif len(module_obj['additional_sections']) > 0:
+            elif module_obj['additional_sections']:
                 process_patches['modules'].append(module_obj)
         except OSError as ex:
             if ex.winerror != 299:
                 print(str(ex))
     return process_patches
+
 
 def print_process_patches(process_patches):
     print("Patches in PID {0}, File {1}".format(process_patches['pid'], process_patches['file']))
@@ -207,9 +222,9 @@ def print_process_patches(process_patches):
         for section in module['additional_sections']:
             print("Additional executable section: ")
             print("{}".format(section.Name))
-    
 
-def get_process_patches(process_ids = None):
+
+def get_process_patches(process_ids=None):
     processes_patches = []
     if not process_ids:
         process_ids = [pid for pid in psutil.pids() if pid != 0]
@@ -225,6 +240,7 @@ def get_process_patches(process_ids = None):
         except Exception as ex:
             print("Error analyzing process ID: {}".format(pid))
     return processes_patches
+
 
 if __name__ == "__main__":
     system = winappdbg.System()
