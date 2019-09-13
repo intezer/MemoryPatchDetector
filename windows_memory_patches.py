@@ -4,7 +4,6 @@ import capstone
 import pefile
 import psutil
 import winappdbg
-from builtins import range
 
 NTDLL = ctypes.windll.ntdll
 KERNEL32 = ctypes.windll.kernel32
